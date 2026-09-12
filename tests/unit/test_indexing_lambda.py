@@ -10,14 +10,19 @@ def mock_dependencies():
          patch('lambdas.indexing.handler.s3_service') as mock_s3_svc, \
          patch('lambdas.indexing.handler.dynamodb_service') as mock_dyn_svc, \
          patch('lambdas.indexing.handler.embedding_service') as mock_emb_svc, \
-         patch('lambdas.indexing.handler.opensearch_service') as mock_os_svc:
-         
+         patch('lambdas.indexing.handler.opensearch_service') as mock_os_svc, \
+         patch('backend.app.services.conflict_service.ConflictService') as mock_conflict_svc:
+
+         # ConflictService.detect_conflicts returns 0 by default — non-blocking
+         mock_conflict_svc.return_value.detect_conflicts.return_value = 0
+
          yield {
              "doc": mock_doc_svc,
              "s3": mock_s3_svc,
              "dyn": mock_dyn_svc,
              "emb": mock_emb_svc,
-             "os": mock_os_svc
+             "os": mock_os_svc,
+             "conflict": mock_conflict_svc,
          }
 
 def test_handler_successful_indexing(mock_dependencies):

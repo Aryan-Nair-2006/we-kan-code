@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Team Knowledge Finder - Phase 3 Document Ingestion and Vector Indexing
+Description: Team Knowledge Finder - Ingestion, Indexing, RAG Query, and Review workflow
 
 Globals:
   Function:
@@ -10,8 +10,12 @@ Globals:
     Environment:
       Variables:
         LOG_LEVEL: INFO
+        LOG_FORMAT: json
+        ENVIRONMENT: production
         S3_BUCKET_NAME: !Ref KnowledgeBucket
         DYNAMODB_TABLE_NAME: !Ref MetadataTable
+        REVIEWS_TABLE_NAME: !Ref ReviewsTable
+        CONFLICTS_TABLE_NAME: !Ref ConflictsTable
         CHUNK_SIZE_WORDS: 600
         CHUNK_OVERLAP_WORDS: 80
         BEDROCK_EMBEDDING_MODEL_ID: amazon.titan-embed-text-v1
@@ -20,6 +24,10 @@ Globals:
         OPENSEARCH_VECTOR_DIMENSION: 1536
         OPENSEARCH_BULK_BATCH_SIZE: 50
         BEDROCK_MAX_RETRIES: 3
+        CLOUDWATCH_NAMESPACE: TeamKnowledgeFinder
+        CONFLICT_DETECTION_ENABLED: true
+        CONFLICT_CONFIDENCE_THRESHOLD: "0.75"
+        CONFLICT_MAX_CANDIDATES: "5"
 
 Resources:
   # -------------------------------------------------------------------------
@@ -43,6 +51,36 @@ Resources:
           AttributeType: S
       KeySchema:
         - AttributeName: document_id
+          KeyType: HASH
+
+  # -------------------------------------------------------------------------
+  # DynamoDB Table (Flag / Review Workflow)
+  # -------------------------------------------------------------------------
+  ReviewsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-reviews"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: flag_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: flag_id
+          KeyType: HASH
+
+  # -------------------------------------------------------------------------
+  # DynamoDB Table (Phase 7 — Conflict Detection)
+  # -------------------------------------------------------------------------
+  ConflictsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-conflicts"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: conflict_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: conflict_id
           KeyType: HASH
 
   # -------------------------------------------------------------------------
@@ -125,6 +163,8 @@ Resources:
             BucketName: !Ref KnowledgeBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref MetadataTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConflictsTable
         - Statement:
             - Effect: Allow
               Action:
@@ -133,6 +173,10 @@ Resources:
             - Effect: Allow
               Action:
                 - aoss:APIAccessAll
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
               Resource: "*"
       Events:
         ProcessedChunksCreated:
@@ -168,6 +212,8 @@ Resources:
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref MetadataTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref ConflictsTable
         - Statement:
             - Effect: Allow
               Action:
@@ -177,6 +223,10 @@ Resources:
               Action:
                 - aoss:APIAccessAll
               Resource: !GetAtt KnowledgeCollection.Arn
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
       Events:
         QueryEndpoint:
           Type: Api
@@ -184,6 +234,81 @@ Resources:
             RestApiId: !Ref ApiGatewayApi
             Path: /query
             Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  ApiLambda:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildProperties:
+        Manifest: lambdas/requirements.txt
+    Properties:
+      CodeUri: ../.sam_build_context
+      Handler: lambdas.api.handler.handler
+      Environment:
+        Variables:
+          REVIEWS_TABLE_NAME: !Ref ReviewsTable
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref KnowledgeBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MetadataTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ReviewsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConflictsTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+      Events:
+        ApiProxy:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGatewayApi
+            Path: /{proxy+}
+            Method: ANY
+            Auth:
+              Authorizer: CognitoAuthorizer
+        ApiRoot:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGatewayApi
+            Path: /
+            Method: ANY
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  # -------------------------------------------------------------------------
+  # Cognito (Phase 7 — Authentication & Authorization)
+  # -------------------------------------------------------------------------
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-user-pool"
+      AutoVerifiedAttributes:
+        - email
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+        - Name: role
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "${AWS::StackName}-client"
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
 
   # -------------------------------------------------------------------------
   # API Gateway
@@ -192,6 +317,54 @@ Resources:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
+      Cors:
+        AllowMethods: "'*'"
+        AllowHeaders: "'*'"
+        AllowOrigin: "'*'"
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt CognitoUserPool.Arn
+            Identity:
+              Header: Authorization
+
+  # -------------------------------------------------------------------------
+  # Phase 7: CloudWatch Alarms
+  # -------------------------------------------------------------------------
+  QueryLambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-query-errors"
+      AlarmDescription: "High error rate on QueryLambda"
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref QueryLambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  IndexingLambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-indexing-errors"
+      AlarmDescription: "High error rate on IndexingLambda"
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref IndexingLambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
 
 Outputs:
   ApiEndpoint:
@@ -200,3 +373,12 @@ Outputs:
   OpenSearchEndpoint:
     Description: "OpenSearch Serverless Collection Endpoint"
     Value: !GetAtt KnowledgeCollection.CollectionEndpoint
+  ConflictsTableName:
+    Description: "DynamoDB Conflicts Table Name"
+    Value: !Ref ConflictsTable
+  CognitoUserPoolId:
+    Description: "Cognito User Pool ID"
+    Value: !Ref CognitoUserPool
+  CognitoClientId:
+    Description: "Cognito User Pool Client ID"
+    Value: !Ref CognitoUserPoolClient

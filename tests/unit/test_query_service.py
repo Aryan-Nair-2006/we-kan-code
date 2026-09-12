@@ -1,14 +1,22 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from shared.models.query import QueryRequest, SourceCitation
+from shared.constants.document_status import DocumentStatus
 from backend.app.services.query_service import QueryService
 
 @pytest.fixture
 def query_service():
     with patch('backend.app.services.query_service.EmbeddingService'), \
          patch('backend.app.services.query_service.OpenSearchService'), \
-         patch('backend.app.services.query_service.GenerationService'):
+         patch('backend.app.services.query_service.GenerationService'), \
+         patch('backend.app.services.query_service.DynamoDBService'):
         svc = QueryService()
+        # By default, pretend every referenced document is live-READY so
+        # pre-existing tests that don't care about the freshness re-check
+        # still exercise the rest of the pipeline unaffected.
+        default_doc = MagicMock()
+        default_doc.status = DocumentStatus.READY
+        svc.dynamodb_service.get_document.return_value = default_doc
         yield svc
 
 def test_empty_question_rejected():
@@ -51,7 +59,7 @@ def test_query_sufficient_evidence_generates_answer(query_service):
     query_service.embedding_service.embed_text.return_value = [0.1] * 1536
     
     query_service.opensearch_service.search_similar_chunks.return_value = [
-        {"chunk_id": "1", "document_id": "d1", "text": "deploy process", "_score": query_service.min_relevance + 0.1, "document_status": "READY", "filename": "doc.pdf", "page_number": 1}
+        {"chunk_id": "1", "document_id": "d1", "text": "deploy process", "_score": query_service.min_relevance + 0.1, "document_status": "READY", "access_level": "public", "filename": "doc.pdf", "page_number": 1}
     ]
     
     query_service.generation_service.generate_grounded_answer.return_value = "You deploy via pipeline. [S1]"
@@ -82,10 +90,10 @@ def test_ignore_empty_or_malformed_chunk(query_service):
         {"_score": 0.9, "chunk_id": "1"}, # Missing text/document_id
         {"_score": 0.9, "chunk_id": "2", "document_id": "d2", "text": "   "}, # Empty text
         {"_score": 0.9, "chunk_id": "3", "document_id": "d3", "text": "valid text", "document_status": "FAILED"}, # Not ready
-        {"_score": 0.9, "chunk_id": "4", "document_id": "d4", "text": "valid text", "document_status": "READY"}, # Valid
+        {"_score": 0.9, "chunk_id": "4", "document_id": "d4", "text": "valid text", "document_status": "READY", "access_level": "public"}, # Valid
     ]
     
-    valid = query_service._validate_and_filter_sources(raw_hits)
+    valid = query_service._validate_and_filter_sources(raw_hits, {"public"})
     assert valid[0].chunk_id == "4"
 
 def test_score_normalization():
@@ -112,12 +120,41 @@ def test_document_status_rejected(query_service):
         {"_score": 0.9, "chunk_id": "1", "document_id": "d1", "text": "missing status"}, 
         {"_score": 0.9, "chunk_id": "2", "document_id": "d2", "text": "failed status", "document_status": "FAILED"},
         {"_score": 0.9, "chunk_id": "3", "document_id": "d3", "text": "processing status", "document_status": "PROCESSING"},
-        {"_score": 0.9, "chunk_id": "4", "document_id": "d4", "text": "ready status", "document_status": "READY"}, 
+        {"_score": 0.9, "chunk_id": "4", "document_id": "d4", "text": "ready status", "document_status": "READY", "access_level": "public"},
     ]
     
-    valid = query_service._validate_and_filter_sources(raw_hits)
+    valid = query_service._validate_and_filter_sources(raw_hits, {"public"})
     assert len(valid) == 1
     assert valid[0].chunk_id == "4"
+
+def test_access_level_rejected(query_service):
+    raw_hits = [
+        {"_score": 0.9, "chunk_id": "1", "document_id": "d1", "text": "admin only", "document_status": "READY", "access_level": "admin"},
+        {"_score": 0.9, "chunk_id": "2", "document_id": "d2", "text": "no access level set", "document_status": "READY"},
+        {"_score": 0.9, "chunk_id": "3", "document_id": "d3", "text": "public text", "document_status": "READY", "access_level": "public"},
+    ]
+
+    valid = query_service._validate_and_filter_sources(raw_hits, {"public", "team"})
+    assert len(valid) == 1
+    assert valid[0].chunk_id == "3"
+
+def test_flagged_document_excluded_by_live_status(query_service):
+    request = QueryRequest(question="How to deploy?")
+    query_service.embedding_service.embed_text.return_value = [0.1] * 1536
+    query_service.opensearch_service.search_similar_chunks.return_value = [
+        {"chunk_id": "1", "document_id": "d1", "text": "deploy process", "_score": query_service.min_relevance + 0.1, "document_status": "READY", "access_level": "public"}
+    ]
+    # Simulate the document having been flagged since it was indexed:
+    # the OpenSearch snapshot still says READY, but DynamoDB says otherwise.
+    flagged_doc = MagicMock()
+    flagged_doc.status = DocumentStatus.PENDING_REVIEW
+    query_service.dynamodb_service.get_document.return_value = flagged_doc
+
+    response = query_service.query(request)
+
+    assert response.grounded is False
+    assert len(response.sources) == 0
+    query_service.generation_service.generate_grounded_answer.assert_not_called()
 
 def test_prompt_injection_guard(query_service):
     # Verify that the generated prompt places evidence in <evidence> tags
@@ -153,7 +190,7 @@ def test_no_citations_means_not_grounded(query_service):
     request = QueryRequest(question="How to deploy?")
     query_service.embedding_service.embed_text.return_value = [0.1] * 1536
     query_service.opensearch_service.search_similar_chunks.return_value = [
-        {"chunk_id": "1", "document_id": "d1", "text": "deploy process", "_score": query_service.min_relevance + 0.1, "document_status": "READY"}
+        {"chunk_id": "1", "document_id": "d1", "text": "deploy process", "_score": query_service.min_relevance + 0.1, "document_status": "READY", "access_level": "public"}
     ]
     
     # Generated answer contains no citations
@@ -169,9 +206,9 @@ def test_no_citations_means_not_grounded(query_service):
 
 def test_duplicate_chunks_are_deduplicated(query_service):
     raw_hits = [
-        {"_score": 0.9, "chunk_id": "1", "document_id": "d1", "text": "text1", "document_status": "READY"},
-        {"_score": 0.8, "chunk_id": "1", "document_id": "d1", "text": "text1", "document_status": "READY"}, # Duplicate
+        {"_score": 0.9, "chunk_id": "1", "document_id": "d1", "text": "text1", "document_status": "READY", "access_level": "public"},
+        {"_score": 0.8, "chunk_id": "1", "document_id": "d1", "text": "text1", "document_status": "READY", "access_level": "public"}, # Duplicate
     ]
-    valid = query_service._validate_and_filter_sources(raw_hits)
+    valid = query_service._validate_and_filter_sources(raw_hits, {"public"})
     assert len(valid) == 1
     assert valid[0].chunk_id == "1"

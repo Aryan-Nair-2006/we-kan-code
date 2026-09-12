@@ -1,13 +1,15 @@
 import json
 import urllib.parse
+from datetime import datetime, timezone
 from typing import Dict, Any
 
-from backend.app.core.logging import setup_logger
+from backend.app.core.logging import setup_logger, generate_request_id
 from backend.app.services.document_service import DocumentService
 from backend.app.services.s3_service import S3Service
 from backend.app.services.dynamodb_service import DynamoDBService
 from backend.app.services.embedding_service import EmbeddingService
 from backend.app.services.opensearch_service import OpenSearchService
+from backend.app.services.metrics_service import MetricsService
 from shared.models.indexing import IndexedChunk
 from shared.constants.document_status import DocumentStatus
 
@@ -19,6 +21,7 @@ dynamodb_service = DynamoDBService()
 document_service = DocumentService()
 embedding_service = EmbeddingService()
 opensearch_service = OpenSearchService()
+metrics_service = MetricsService()
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     logger.info("Indexing Lambda invoked")
@@ -102,12 +105,33 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     
                 opensearch_service.bulk_index_chunks(indexed_chunks)
                 
-                # 9. Mark INDEXED
+                # 9. Mark INDEXED — set indexed_at timestamp (Phase 7)
                 doc.indexing_status = "INDEXED"
+                doc.indexed_at = datetime.now(timezone.utc).isoformat()
                 doc.processing_error = None
                 dynamodb_service.update_document(doc)
                 logger.info(f"Successfully indexed document {document_id}")
-                
+                metrics_service.record_indexing_success()
+
+                # 10. Phase 7: Best-effort conflict detection — NEVER blocks indexing
+                try:
+                    from backend.app.services.conflict_service import ConflictService
+                    conflict_svc = ConflictService()
+                    raw_chunks_for_conflict = [
+                        {"chunk_id": c.chunk_id, "text": c.text}
+                        for c in indexed_chunks
+                    ]
+                    n_conflicts = conflict_svc.detect_conflicts(
+                        document_id=document_id,
+                        chunks=raw_chunks_for_conflict,
+                        opensearch_service=opensearch_service,
+                        embedding_service=embedding_service,
+                    )
+                    if n_conflicts > 0:
+                        metrics_service.record_conflict_detected(n_conflicts)
+                except Exception as ce:
+                    logger.warning(f"Conflict detection failed (non-blocking): {ce}")
+
             except Exception as e:
                 # Handle Indexing Failure
                 err_msg = str(e)
@@ -115,6 +139,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 doc.indexing_status = "INDEXING_FAILED"
                 doc.processing_error = err_msg
                 dynamodb_service.update_document(doc)
+                metrics_service.record_indexing_failure()
 
         except Exception as e:
             logger.error(f"Unexpected error processing record: {str(e)}")

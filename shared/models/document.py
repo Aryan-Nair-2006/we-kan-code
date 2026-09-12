@@ -20,6 +20,11 @@ class DocumentMetadata(BaseModel):
     s3_key: Optional[str] = None
     chunk_count: Optional[int] = 0
     processing_error: Optional[str] = None
+    # Phase 7: Freshness / versioning fields
+    content_hash: Optional[str] = None       # SHA-256 of raw uploaded bytes
+    indexed_at: Optional[str] = None         # ISO timestamp when indexing completed
+    superseded_by: Optional[str] = None      # document_id of the newer version
+    is_current: bool = True                  # False when a newer version exists
 
 class DocumentChunk(BaseModel):
     chunk_id: str
@@ -49,12 +54,53 @@ class AnswerResponse(BaseModel):
     
 class FlagRequest(BaseModel):
     document_id: str
-    chunk_id: Optional[str]
+    chunk_id: Optional[str] = None
     reason: str
-    
+    flagged_by: str = "anonymous"
+
+class FlagRecord(BaseModel):
+    flag_id: str
+    document_id: str
+    chunk_id: Optional[str] = None
+    reason: str
+    flagged_by: str = "anonymous"
+    status: str = "OPEN"  # OPEN | RESOLVED
+    created_at: str
+    resolved_at: Optional[str] = None
+    resolution: Optional[str] = None
+    reviewer: Optional[str] = None
+    notes: Optional[str] = None
+
+class ResolveFlagRequest(BaseModel):
+    resolution: str  # e.g. "CORRECTED", "DISMISSED", "ARCHIVE_DOCUMENT"
+    reviewer: str = "anonymous"
+    notes: Optional[str] = None
+
 class ReviewRecord(BaseModel):
     flag_id: str
     document_id: str
     reviewer: str
     action_taken: str
     updated_at: str
+
+# ---------------------------------------------------------------------------
+# Phase 7: Conflict Detection
+# ---------------------------------------------------------------------------
+
+class ConflictRecord(BaseModel):
+    """
+    Represents a detected semantic conflict between two document chunks.
+    Stored in the ConflictsTable DynamoDB table.
+    """
+    conflict_id: str
+    source_document_id: str
+    source_chunk_id: str
+    conflicting_document_id: str
+    conflicting_chunk_id: str
+    relationship: str = "CONTRADICTS"
+    confidence: float
+    topic: Optional[str] = None           # Brief reason from the classifier
+    detected_at: str
+    status: str = "OPEN"                  # OPEN | REVIEWED | RESOLVED | DISMISSED
+    reviewed_by: Optional[str] = None
+    resolution: Optional[str] = None

@@ -7,3 +7,4 @@ class DocumentStatus(str, Enum):
     FAILED = "failed"
     ARCHIVED = "archived"
     PENDING_REVIEW = "pending_review"
+    SUPERSEDED = "superseded"  # Phase 7: older version replaced by a newer upload

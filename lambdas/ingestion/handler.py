@@ -7,6 +7,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from backend.app.services.s3_service import S3Service
 from backend.app.services.dynamodb_service import DynamoDBService
+from backend.app.services.metrics_service import MetricsService
 from shared.constants.document_status import DocumentStatus
 from lambdas.ingestion.extraction.pdf import PDFExtractor
 from lambdas.ingestion.extraction.docx import DOCXExtractor
@@ -22,6 +23,7 @@ logger.setLevel(logging.INFO)
 
 s3_service = S3Service()
 dynamodb_service = DynamoDBService()
+metrics_service = MetricsService()
 chunker = TextChunker(
     chunk_size_words=settings.chunk_size_words,
     chunk_overlap_words=settings.chunk_overlap_words
@@ -97,6 +99,7 @@ def process_s3_object(bucket: str, key: str):
         doc_meta.chunk_count = len(chunks)
         doc_meta.processing_error = None
         dynamodb_service.update_document(doc_meta)
+        metrics_service.record_document_processing_success()
         
         logger.info(f"Successfully processed document {document_id} with {len(chunks)} chunks.")
         
@@ -105,6 +108,7 @@ def process_s3_object(bucket: str, key: str):
         doc_meta.status = DocumentStatus.FAILED
         doc_meta.processing_error = str(e)
         dynamodb_service.update_document(doc_meta)
+        metrics_service.record_document_processing_failure()
 
 
 import urllib.parse

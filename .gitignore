@@ -6,3 +6,5 @@ __pycache__/
 .aws/
 *.pyc
 .DS_Store
+.aws-sam/
+.sam_build_context/

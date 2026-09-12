@@ -1,53 +1,119 @@
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional, Dict
-from pydantic import BaseModel, Field
+from typing import List, Optional
+
+import boto3
+
+from backend.app.core.config import settings
+from backend.app.core.exceptions import StorageError, ValidationError
 from backend.app.core.logging import setup_logger
+from backend.app.services.dynamodb_service import DynamoDBService
+from shared.constants.document_status import DocumentStatus
+from shared.models.document import FlagRecord, FlagRequest, ResolveFlagRequest
 
 logger = setup_logger(__name__)
 
-class FlagSubmission(BaseModel):
-    flag_id: str = Field(default_factory=lambda: f"FLAG-{uuid.uuid4().hex[:8]}")
-    document_id: Optional[str] = "DOC-UNKNOWN"
-    chunk_id: Optional[str] = None
-    reason: str
-    details: Optional[str] = ""
-    question: Optional[str] = ""
-    answer: Optional[str] = ""
-    source_filename: Optional[str] = "Unknown"
-    supporting_passage: Optional[str] = ""
-    status: str = "Pending"  # Pending, Under Review, Resolved, Rejected
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
-class ReviewUpdateRequest(BaseModel):
-    status: str
-    reviewer: Optional[str] = "Admin"
-    notes: Optional[str] = None
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-# In-memory store fallback for hackathon / local development, can interface with DynamoDB
-_REVIEWS_DB: Dict[str, FlagSubmission] = {}
 
 class ReviewService:
-    def create_flag(self, flag: FlagSubmission) -> FlagSubmission:
-        _REVIEWS_DB[flag.flag_id] = flag
-        logger.info(f"Created review flag {flag.flag_id} for document {flag.document_id}")
-        return flag
+    """
+    Owns the freshness/review workflow: recording flags against documents or
+    chunks, listing them for reviewers, and resolving them. Deliberately kept
+    simple for a hackathon build:
+      - "CORRECTED" unblocks the document (sets it back to READY) but does NOT
+        re-run ingestion/indexing automatically. The document owner still needs
+        to re-upload the corrected file for the new content to actually reach
+        the index. Flagged here so nobody assumes this is fully automatic.
+      - "ARCHIVE_DOCUMENT" marks the document ARCHIVED so new queries stop
+        surfacing it, but does not retroactively purge chunks already indexed
+        in OpenSearch. A full removal would need an explicit delete-by-query
+        against the index, left out to fit the time budget.
+    """
 
-    def list_flags(self, status_filter: Optional[str] = None) -> List[FlagSubmission]:
-        flags = list(_REVIEWS_DB.values())
-        if status_filter and status_filter != "All":
-            flags = [f for f in flags if f.status.lower() == status_filter.lower()]
-        # Return sorted by created_at descending
-        flags.sort(key=lambda x: x.created_at, reverse=True)
-        return flags
+    def __init__(self, table_name: str = settings.reviews_table_name):
+        self.table_name = table_name
+        self.dynamodb = boto3.resource('dynamodb', region_name=settings.aws_region)
+        self.table = self.dynamodb.Table(self.table_name)
+        self.documents = DynamoDBService()
 
-    def update_flag_status(self, flag_id: str, update_req: ReviewUpdateRequest) -> Optional[FlagSubmission]:
-        if flag_id not in _REVIEWS_DB:
-            return None
-        flag = _REVIEWS_DB[flag_id]
-        flag.status = update_req.status
-        flag.updated_at = datetime.now(timezone.utc).isoformat()
-        _REVIEWS_DB[flag_id] = flag
-        logger.info(f"Updated flag {flag_id} status to {update_req.status}")
-        return flag
+    def create_flag(self, request: FlagRequest) -> FlagRecord:
+        doc = self.documents.get_document(request.document_id)
+        if not doc:
+            raise ValidationError(f"Document {request.document_id} not found")
+
+        record = FlagRecord(
+            flag_id=str(uuid.uuid4()),
+            document_id=request.document_id,
+            chunk_id=request.chunk_id,
+            reason=request.reason,
+            flagged_by=request.flagged_by,
+            status="OPEN",
+            created_at=_now_iso(),
+        )
+        try:
+            self.table.put_item(Item=record.model_dump(mode='json'))
+        except Exception as e:
+            logger.error(f"Failed to create flag: {str(e)}")
+            raise StorageError(f"DynamoDB error: {str(e)}")
+
+        # Surface the flag on the document itself so it's visible outside the
+        # review page too (badge in the library/home views).
+        doc.status = DocumentStatus.PENDING_REVIEW
+        self.documents.update_document(doc)
+
+        return record
+
+    def list_flags(self, status: Optional[str] = None) -> List[FlagRecord]:
+        try:
+            response = self.table.scan()
+            items = response.get('Items', [])
+        except Exception as e:
+            logger.error(f"Failed to list flags: {str(e)}")
+            raise StorageError(f"DynamoDB scan error: {str(e)}")
+
+        records = [FlagRecord(**item) for item in items]
+        if status:
+            records = [r for r in records if r.status.upper() == status.upper()]
+        records.sort(key=lambda r: r.created_at, reverse=True)
+        return records
+
+    def get_flag(self, flag_id: str) -> Optional[FlagRecord]:
+        try:
+            response = self.table.get_item(Key={'flag_id': flag_id})
+            item = response.get('Item')
+            return FlagRecord(**item) if item else None
+        except Exception as e:
+            logger.error(f"Failed to get flag {flag_id}: {str(e)}")
+            raise StorageError(f"DynamoDB error: {str(e)}")
+
+    def resolve_flag(self, flag_id: str, resolution: ResolveFlagRequest) -> FlagRecord:
+        record = self.get_flag(flag_id)
+        if not record:
+            raise ValidationError(f"Flag {flag_id} not found")
+
+        record.status = "RESOLVED"
+        record.resolved_at = _now_iso()
+        record.resolution = resolution.resolution
+        record.reviewer = resolution.reviewer
+        record.notes = resolution.notes
+
+        try:
+            self.table.put_item(Item=record.model_dump(mode='json'))
+        except Exception as e:
+            logger.error(f"Failed to resolve flag {flag_id}: {str(e)}")
+            raise StorageError(f"DynamoDB error: {str(e)}")
+
+        doc = self.documents.get_document(record.document_id)
+        if doc:
+            remaining_open = [f for f in self.list_flags(status="OPEN") if f.document_id == doc.document_id]
+            if resolution.resolution == "ARCHIVE_DOCUMENT":
+                doc.status = DocumentStatus.ARCHIVED
+            elif not remaining_open:
+                # No other open flags against this document: safe to unblock it.
+                doc.status = DocumentStatus.READY
+            self.documents.update_document(doc)
+
+        return record

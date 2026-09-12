@@ -4,6 +4,7 @@ import traceback
 from pydantic import ValidationError
 
 from backend.app.services.query_service import QueryService
+from backend.app.services.authorization_service import AuthorizationService
 from shared.models.query import QueryRequest
 
 logger = logging.getLogger()
@@ -11,6 +12,7 @@ logger.setLevel(logging.INFO)
 
 # Initialize service globally for container reuse
 query_service = None
+auth_service = None
 
 def get_query_service():
     global query_service
@@ -18,9 +20,15 @@ def get_query_service():
         query_service = QueryService()
     return query_service
 
+def get_auth_service():
+    global auth_service
+    if auth_service is None:
+        auth_service = AuthorizationService()
+    return auth_service
+
 def lambda_handler(event, context):
     """
-    Lambda handler for answering queries using RAG.
+    Lambda handler for answering queries using RAG with backend authorization.
     """
     logger.info("Received query event")
     
@@ -39,9 +47,20 @@ def lambda_handler(event, context):
             'body': json.dumps({'error': 'Invalid request format', 'details': str(e)})
         }
         
+    # Derive AuthContext server-side
+    try:
+        auth_svc = get_auth_service()
+        auth_ctx = auth_svc.build_auth_context_from_event(event)
+    except ValueError as e:
+        logger.warning(f"Authentication failed: {str(e)}")
+        return {
+            'statusCode': 401,
+            'body': json.dumps({'error': 'Authentication required', 'details': str(e)})
+        }
+        
     try:
         svc = get_query_service()
-        response = svc.query(request)
+        response = svc.query(request, auth_context=auth_ctx)
         
         return {
             'statusCode': 200,

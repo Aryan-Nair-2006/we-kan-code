@@ -61,6 +61,20 @@ def render_answer(question: str, result: dict):
     </div>
     """, unsafe_allow_html=True)
 
+    # Phase 7: Conflict Warning Box if contradictory sources detected
+    if result.get("conflict_warning"):
+        conflict_details = result.get("conflict_details") or "Multiple sources in the knowledge base appear to present conflicting information on this topic."
+        st.markdown(f"""
+        <div class="tkf-card" style="border-left: 4px solid var(--tkf-warning); margin-bottom: 1.5rem; background: rgba(245, 158, 11, 0.08);">
+            <div style="font-weight: 700; color: var(--tkf-warning); font-size: 1.05rem; display: flex; align-items: center; gap: 8px;">
+                <span>⚡</span> POTENTIAL KNOWLEDGE CONFLICT DETECTED
+            </div>
+            <div style="margin-top: 0.4rem; font-size: 0.92rem; color: var(--tkf-text-secondary); line-height: 1.5;">
+                {conflict_details}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
     # Format Answer Text with Citation Badges
     formatted_answer = re.sub(
         r'\[S(\d+)\]',
