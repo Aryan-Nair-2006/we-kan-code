@@ -96,6 +96,8 @@ def query_knowledge(request: QueryRequest, http_request: Request):
 def flag_knowledge(request: FlagRequest, http_request: Request):
     # Require authentication — fail-closed
     auth_ctx = get_required_auth_context(http_request)
+    if auth_ctx and auth_ctx.user_id:
+        request.flagged_by = auth_ctx.user_id
     try:
         return review_service.create_flag(request)
     except ValidationError as e:
@@ -128,10 +130,15 @@ def resolve_review(flag_id: str, request: ResolveFlagRequest, http_request: Requ
     if auth_ctx.role not in ("developer", "admin", "team"):
         raise HTTPException(status_code=403, detail="Insufficient permissions to resolve reviews")
 
+    if auth_ctx and auth_ctx.user_id and (not request.reviewer or request.reviewer == "anonymous"):
+        request.reviewer = auth_ctx.user_id
+
     try:
         return review_service.resolve_flag(flag_id, request)
     except ValidationError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error resolving flag {flag_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")

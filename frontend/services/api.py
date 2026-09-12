@@ -89,26 +89,57 @@ def query_knowledge(query_text: str, access_levels: list = None) -> dict:
         return {"error": detail}
 
 
-def flag_content(document_id: str, reason: str, chunk_id: str = None, flagged_by: str = "anonymous") -> dict:
+def flag_content(
+    document_id: str,
+    reason: str,
+    chunk_id: Optional[str] = None,
+    flagged_by: str = "anonymous",
+    details: Optional[str] = None,
+    question: Optional[str] = None,
+    answer: Optional[str] = None,
+    source_filename: Optional[str] = None,
+    supporting_passage: Optional[str] = None
+) -> dict:
     try:
-        payload = {"document_id": document_id, "reason": reason, "flagged_by": flagged_by}
-        if chunk_id:
-            payload["chunk_id"] = chunk_id
+        payload = {
+            "document_id": document_id,
+            "reason": reason,
+            "chunk_id": chunk_id,
+            "flagged_by": flagged_by,
+            "details": details,
+            "question": question,
+            "answer": answer,
+            "source_filename": source_filename,
+            "supporting_passage": supporting_passage
+        }
+        payload = {k: v for k, v in payload.items() if v is not None}
         response = requests.post(f"{API_BASE_URL}/flags", json=payload, timeout=10)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Error flagging content: {e}")
-        return {"error": str(e)}
+        detail = "Failed to submit flag"
+        if e.response is not None:
+            try:
+                detail = e.response.json().get("detail", e.response.text)
+            except Exception:
+                detail = e.response.text
+        return {"error": detail}
 
 
 def submit_flag(flag_data: dict) -> dict:
     """Compatibility wrapper for flag submission"""
-    doc_id = flag_data.get("document_id", "DOC-UNKNOWN")
-    reason = flag_data.get("reason", "Inaccurate information")
-    chunk_id = flag_data.get("chunk_id")
-    flagged_by = flag_data.get("flagged_by", "anonymous")
-    return flag_content(document_id=doc_id, reason=reason, chunk_id=chunk_id, flagged_by=flagged_by)
+    return flag_content(
+        document_id=flag_data.get("document_id", "DOC-UNKNOWN"),
+        reason=flag_data.get("reason", "Inaccurate information"),
+        chunk_id=flag_data.get("chunk_id"),
+        flagged_by=flag_data.get("flagged_by", "anonymous"),
+        details=flag_data.get("details"),
+        question=flag_data.get("question"),
+        answer=flag_data.get("answer"),
+        source_filename=flag_data.get("source_filename"),
+        supporting_passage=flag_data.get("supporting_passage")
+    )
 
 
 def list_reviews(status: Optional[str] = None) -> list:

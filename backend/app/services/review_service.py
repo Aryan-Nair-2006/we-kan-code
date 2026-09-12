@@ -40,8 +40,8 @@ class ReviewService:
         self.documents = DynamoDBService()
 
     def create_flag(self, request: FlagRequest) -> FlagRecord:
-        doc = self.documents.get_document(request.document_id)
-        if not doc:
+        doc = self.documents.get_document(request.document_id) if request.document_id != "DOC-UNKNOWN" else None
+        if not doc and request.document_id != "DOC-UNKNOWN":
             raise ValidationError(f"Document {request.document_id} not found")
 
         record = FlagRecord(
@@ -49,6 +49,11 @@ class ReviewService:
             document_id=request.document_id,
             chunk_id=request.chunk_id,
             reason=request.reason,
+            details=request.details,
+            question=request.question,
+            answer=request.answer,
+            source_filename=request.source_filename or (doc.filename if doc else "Unknown"),
+            supporting_passage=request.supporting_passage,
             flagged_by=request.flagged_by,
             status="OPEN",
             created_at=_now_iso(),
@@ -61,8 +66,9 @@ class ReviewService:
 
         # Surface the flag on the document itself so it's visible outside the
         # review page too (badge in the library/home views).
-        doc.status = DocumentStatus.PENDING_REVIEW
-        self.documents.update_document(doc)
+        if doc:
+            doc.status = DocumentStatus.PENDING_REVIEW
+            self.documents.update_document(doc)
 
         return record
 
@@ -94,9 +100,15 @@ class ReviewService:
         if not record:
             raise ValidationError(f"Flag {flag_id} not found")
 
-        record.status = "RESOLVED"
+        valid_actions = {"CORRECTED", "DISMISSED", "ARCHIVE_DOCUMENT", "RESOLVED"}
+        res_action = resolution.resolution.upper()
+        if res_action not in valid_actions:
+            raise ValidationError(f"Invalid resolution action: {resolution.resolution}. Must be one of {sorted(list(valid_actions))}")
+
+        status_value = "DISMISSED" if res_action == "DISMISSED" else "RESOLVED"
+        record.status = status_value
         record.resolved_at = _now_iso()
-        record.resolution = resolution.resolution
+        record.resolution = res_action
         record.reviewer = resolution.reviewer
         record.notes = resolution.notes
 
@@ -106,14 +118,15 @@ class ReviewService:
             logger.error(f"Failed to resolve flag {flag_id}: {str(e)}")
             raise StorageError(f"DynamoDB error: {str(e)}")
 
-        doc = self.documents.get_document(record.document_id)
-        if doc:
-            remaining_open = [f for f in self.list_flags(status="OPEN") if f.document_id == doc.document_id]
-            if resolution.resolution == "ARCHIVE_DOCUMENT":
-                doc.status = DocumentStatus.ARCHIVED
-            elif not remaining_open:
-                # No other open flags against this document: safe to unblock it.
-                doc.status = DocumentStatus.READY
-            self.documents.update_document(doc)
+        if record.document_id and record.document_id != "DOC-UNKNOWN":
+            doc = self.documents.get_document(record.document_id)
+            if doc:
+                remaining_open = [f for f in self.list_flags(status="OPEN") if f.document_id == doc.document_id]
+                if res_action == "ARCHIVE_DOCUMENT":
+                    doc.status = DocumentStatus.ARCHIVED
+                elif not remaining_open:
+                    # No other open flags against this document: safe to unblock it.
+                    doc.status = DocumentStatus.READY
+                self.documents.update_document(doc)
 
         return record

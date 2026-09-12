@@ -56,6 +56,11 @@ class FlagRequest(BaseModel):
     document_id: str
     chunk_id: Optional[str] = None
     reason: str
+    details: Optional[str] = None
+    question: Optional[str] = None
+    answer: Optional[str] = None
+    source_filename: Optional[str] = None
+    supporting_passage: Optional[str] = None
     flagged_by: str = "anonymous"
 
 class FlagRecord(BaseModel):
@@ -63,8 +68,13 @@ class FlagRecord(BaseModel):
     document_id: str
     chunk_id: Optional[str] = None
     reason: str
+    details: Optional[str] = None
+    question: Optional[str] = None
+    answer: Optional[str] = None
+    source_filename: Optional[str] = None
+    supporting_passage: Optional[str] = None
     flagged_by: str = "anonymous"
-    status: str = "OPEN"  # OPEN | RESOLVED
+    status: str = "OPEN"  # OPEN | RESOLVED | DISMISSED
     created_at: str
     resolved_at: Optional[str] = None
     resolution: Optional[str] = None

@@ -36,6 +36,12 @@ def render_review():
                 flagged_by = flag.get("flagged_by", "anonymous")
                 created_at = flag.get("created_at", "")[:19].replace("T", " ")
                 
+                question = flag.get("question")
+                answer = flag.get("answer")
+                details = flag.get("details")
+                src_filename = flag.get("source_filename")
+                passage = flag.get("supporting_passage")
+
                 with st.container(border=True):
                     st.markdown(f"""
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
@@ -49,8 +55,21 @@ def render_review():
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    st.markdown(f"**Document ID:** `{doc_id}`" + (f"  ·  **Chunk ID:** `{chunk_id}`" if chunk_id else ""))
+                    st.markdown(f"**Document ID:** `{doc_id}`" + (f"  ·  **Chunk ID:** `{chunk_id}`" if chunk_id else "") + (f"  ·  **Source:** {src_filename}" if src_filename else ""))
                     st.caption(f"Flagged by: **{flagged_by}** · Reported at: {created_at}")
+
+                    if question or answer:
+                        st.markdown(f"""
+                        <div style="background: var(--tkf-surface-2); padding: 0.85rem; border-radius: 6px; margin: 0.75rem 0; border: 1px solid var(--tkf-border);">
+                            {f'<div style="font-size: 0.8rem; font-weight: 600; color: var(--tkf-text-muted);">QUESTION</div><div style="font-weight: 600; color: var(--tkf-text-primary); margin-bottom: 0.5rem;">{question}</div>' if question else ''}
+                            {f'<div style="font-size: 0.8rem; font-weight: 600; color: var(--tkf-text-muted);">GENERATED ANSWER</div><div style="font-size: 0.92rem; color: var(--tkf-text-secondary); margin-bottom: 0.5rem;">{answer}</div>' if answer else ''}
+                            {f'<div style="font-size: 0.85rem; color: var(--tkf-warning);"><strong>Reporter Notes:</strong> {details}</div>' if details else ''}
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    if passage:
+                        with st.expander("📄 View Supporting Evidence Passage"):
+                            st.write(passage)
 
                     col1, col2, col3, col4 = st.columns([1.5, 1.2, 1.5, 2.5])
                     reviewer = col4.text_input("Reviewer", value="Admin", key=f"rev_name_{flag_id}", label_visibility="collapsed")
