@@ -1,0 +1,10 @@
+.git/
+.aws-sam/
+.sam_build_context/
+frontend/
+tests/
+scripts/
+infrastructure/
+venv/
+__pycache__/
+*.pyc
