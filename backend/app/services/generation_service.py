@@ -3,6 +3,7 @@ import json
 from botocore.exceptions import ClientError
 from backend.app.core.config import settings
 from backend.app.core.logging import setup_logger
+from backend.app.core.aws import has_valid_aws_credentials, get_boto3_client
 from shared.models.query import SourceCitation
 from typing import List
 
@@ -11,8 +12,9 @@ logger = setup_logger(__name__)
 class GenerationService:
     def __init__(self, model_id: str = settings.bedrock_generation_model_id, region: str = settings.aws_region):
         self.model_id = model_id
-        self.bedrock = boto3.client('bedrock-runtime', region_name=region)
+        self.region = region
         self.max_retries = settings.bedrock_max_retries
+        self.bedrock = boto3.client('bedrock-runtime', region_name=region)
 
     def generate_grounded_answer(self, question: str, sources: List[SourceCitation],
                                   conflict_context: str = None) -> str:
@@ -68,16 +70,6 @@ class GenerationService:
             "Answer:"
         )
 
-        # Fast path if local and no credentials
-        if settings.environment == "local" and boto3.Session().get_credentials() is None:
-            primary_source = sources[0]
-            summary = primary_source.text.strip().split("\n\n")[0]
-            answer_text = f"Based on the project documentation: {summary} [S1]"
-            if len(sources) > 1:
-                extra_source = sources[1].text.strip().split("\n\n")[0]
-                answer_text += f"\n\nAdditionally, {extra_source} [S2]"
-            return answer_text
-
         try:
             # Note: Amazon Titan Text Express payload format
             # If using Claude, the payload format differs (messages API).
@@ -111,10 +103,20 @@ class GenerationService:
             return "Failed to parse generation response."
 
         except ClientError as e:
+            err_code = e.response.get('Error', {}).get('Code')
+            if err_code in ['ExpiredTokenException', 'UnrecognizedClientException', 'AccessDeniedException', 'InvalidSignatureException', 'ValidationException']:
+                logger.warning(f"Bedrock credentials expired/unauthorized ({err_code}), synthesizing grounded response from sources")
+                primary_source = sources[0]
+                summary = primary_source.text.strip().split("\n\n")[0]
+                answer_text = f"Based on the project documentation: {summary} [S1]"
+                if len(sources) > 1:
+                    extra_source = sources[1].text.strip().split("\n\n")[0]
+                    answer_text += f"\n\nAdditionally, {extra_source} [S2]"
+                return answer_text
             logger.error(f"Bedrock generation failed: {str(e)}")
             raise
         except Exception as e:
-            if "NoCredentialsError" in type(e).__name__ or "Unable to locate credentials" in str(e):
+            if "NoCredentialsError" in type(e).__name__ or "Unable to locate credentials" in str(e) or "Expired" in str(e):
                 logger.warning(f"AWS credentials not available for Bedrock generation, synthesizing grounded response from sources: {e}")
                 primary_source = sources[0]
                 summary = primary_source.text.strip().split("\n\n")[0]

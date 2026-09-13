@@ -4,6 +4,7 @@ from requests_aws4auth import AWS4Auth
 from typing import List, Dict, Any
 from backend.app.core.config import settings
 from backend.app.core.logging import setup_logger
+from backend.app.core.aws import has_valid_aws_credentials
 from shared.models.indexing import IndexedChunk
 
 logger = setup_logger(__name__)
@@ -18,30 +19,39 @@ class OpenSearchService:
         self.dimension = settings.opensearch_vector_dimension
         self.batch_size = settings.opensearch_bulk_batch_size
         
-        credentials = boto3.Session().get_credentials()
-        self.awsauth = AWS4Auth(
-            credentials.access_key,
-            credentials.secret_key,
-            region,
-            'aoss',
-            session_token=credentials.token
-        ) if credentials else None
+        self.awsauth = None
+        self.client = None
         
-        # Determine host format (strip https:// if present)
-        host_stripped = self.host.replace("https://", "").strip("/") if self.host else "localhost"
+        if has_valid_aws_credentials():
+            try:
+                credentials = boto3.Session().get_credentials()
+                if credentials:
+                    self.awsauth = AWS4Auth(
+                        credentials.access_key,
+                        credentials.secret_key,
+                        region,
+                        'aoss',
+                        session_token=credentials.token
+                    )
+            except Exception as e:
+                logger.warning(f"AWS4Auth init warning: {e}")
+                self.awsauth = None
         
-        try:
-            self.client = OpenSearch(
-                hosts=[{'host': host_stripped, 'port': 443}],
-                http_auth=self.awsauth,
-                use_ssl=True,
-                verify_certs=True,
-                connection_class=RequestsHttpConnection,
-                timeout=30
-            )
-        except Exception as e:
-            logger.warning(f"OpenSearch client init warning: {e}")
-            self.client = None
+        # Only connect to live OpenSearch if we have valid AWS credentials/auth and a host
+        if self.awsauth is not None and self.host:
+            host_stripped = self.host.replace('https://', '').replace('http://', '').split('/')[0]
+            try:
+                self.client = OpenSearch(
+                    hosts=[{'host': host_stripped, 'port': 443}],
+                    http_auth=self.awsauth,
+                    use_ssl=True,
+                    verify_certs=True,
+                    connection_class=RequestsHttpConnection,
+                    timeout=5
+                )
+            except Exception as e:
+                logger.warning(f"OpenSearch client init warning: {e}")
+                self.client = None
 
     def initialize_index(self):
         """Create the vector index if it does not exist."""

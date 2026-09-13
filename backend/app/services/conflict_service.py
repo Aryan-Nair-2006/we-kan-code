@@ -20,6 +20,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from backend.app.core.config import settings
+from backend.app.core.aws import has_valid_aws_credentials, get_boto3_client, get_boto3_resource
 from shared.models.document import ConflictRecord
 
 logger = logging.getLogger(__name__)
@@ -52,24 +53,20 @@ class ConflictService:
 
     @property
     def bedrock(self):
-        if self._bedrock is None:
-            if boto3.Session().get_credentials() is not None:
-                try:
-                    self._bedrock = boto3.client("bedrock-runtime", region_name=settings.aws_region)
-                except Exception:
-                    self._bedrock = None
+        if self._bedrock is None and has_valid_aws_credentials():
+            self._bedrock = get_boto3_client("bedrock-runtime", region_name=settings.aws_region)
         return self._bedrock
 
     @property
     def dynamodb_table(self):
-        if self._dynamodb is None:
-            if boto3.Session().get_credentials() is not None:
-                try:
-                    ddb = boto3.resource("dynamodb", region_name=settings.aws_region)
+        if self._dynamodb is None and has_valid_aws_credentials():
+            try:
+                ddb = get_boto3_resource("dynamodb", region_name=settings.aws_region)
+                if ddb:
                     self._dynamodb = ddb.Table(self.table_name)
-                except Exception as e:
-                    logger.warning(f"Conflict table init warning: {e}")
-                    self._dynamodb = None
+            except Exception as e:
+                logger.warning(f"Conflict table init warning: {e}")
+                self._dynamodb = None
         return self._dynamodb
 
     # ------------------------------------------------------------------

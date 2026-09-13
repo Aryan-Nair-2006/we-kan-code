@@ -1,3 +1,6 @@
+import os
+os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+
 from pydantic_settings import BaseSettings
 from pydantic import model_validator
 

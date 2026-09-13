@@ -16,6 +16,7 @@ import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 
 from backend.app.core.config import settings
+from backend.app.core.aws import has_valid_aws_credentials, get_boto3_client
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +53,8 @@ class MetricsService:
 
     def _get_client(self):
         """Lazy CloudWatch client — avoids crashing at import/init time."""
-        if self._client is None:
-            try:
-                self._client = boto3.client("cloudwatch", region_name=settings.aws_region)
-            except Exception as e:
-                logger.warning(f"[Metrics] Could not create CloudWatch client: {e}")
+        if self._client is None and has_valid_aws_credentials():
+            self._client = get_boto3_client("cloudwatch", region_name=settings.aws_region)
         return self._client
 
     # ------------------------------------------------------------------

@@ -7,6 +7,7 @@ import boto3
 from backend.app.core.config import settings
 from backend.app.core.exceptions import StorageError, ValidationError
 from backend.app.core.logging import setup_logger
+from backend.app.core.aws import has_valid_aws_credentials, get_boto3_resource
 from backend.app.services.dynamodb_service import DynamoDBService
 from shared.constants.document_status import DocumentStatus
 from shared.models.document import FlagRecord, FlagRequest, ResolveFlagRequest
@@ -40,10 +41,11 @@ class ReviewService:
     def __init__(self, table_name: str = settings.reviews_table_name):
         self.table_name = table_name
         self.table = None
-        if boto3.Session().get_credentials() is not None:
+        if has_valid_aws_credentials():
             try:
-                self.dynamodb = boto3.resource('dynamodb', region_name=settings.aws_region)
-                self.table = self.dynamodb.Table(self.table_name)
+                self.dynamodb = get_boto3_resource('dynamodb', region_name=settings.aws_region)
+                if self.dynamodb:
+                    self.table = self.dynamodb.Table(self.table_name)
             except Exception as e:
                 logger.warning(f"Review table init warning: {e}")
                 self.table = None

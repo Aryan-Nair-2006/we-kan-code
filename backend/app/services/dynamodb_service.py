@@ -1,9 +1,9 @@
-import boto3
 from typing import Optional, List, Dict
 from shared.models.document import DocumentMetadata
 from backend.app.core.config import settings
 from backend.app.core.exceptions import StorageError
 from backend.app.core.logging import setup_logger
+from backend.app.core.aws import has_valid_aws_credentials, get_boto3_resource
 
 logger = setup_logger(__name__)
 
@@ -14,10 +14,11 @@ class DynamoDBService:
     def __init__(self, table_name: str = settings.dynamodb_table_name):
         self.table_name = table_name or "test-table"
         self.table = None
-        if boto3.Session().get_credentials() is not None:
+        if has_valid_aws_credentials():
             try:
-                self.dynamodb = boto3.resource('dynamodb', region_name=settings.aws_region or "us-east-1")
-                self.table = self.dynamodb.Table(self.table_name)
+                self.dynamodb = get_boto3_resource('dynamodb', region_name=settings.aws_region or "us-east-1")
+                if self.dynamodb:
+                    self.table = self.dynamodb.Table(self.table_name)
             except Exception as e:
                 logger.warning(f"DynamoDB resource initialization warning: {e}")
                 self.table = None
