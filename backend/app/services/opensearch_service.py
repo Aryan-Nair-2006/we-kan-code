@@ -5,11 +5,19 @@ from typing import List, Dict, Any
 from backend.app.core.config import settings
 from backend.app.core.logging import setup_logger
 from backend.app.core.aws import has_valid_aws_credentials
+from backend.app.core.local_cache import CHUNKS_FILE, load_json, save_json
 from shared.models.indexing import IndexedChunk
 
 logger = setup_logger(__name__)
 
 _LOCAL_CHUNKS_STORE: Dict[str, Dict[str, Any]] = {}
+
+def _init_chunks_store():
+    data = load_json(CHUNKS_FILE)
+    for chunk_id, chunk_dict in data.items():
+        _LOCAL_CHUNKS_STORE[chunk_id] = chunk_dict
+
+_init_chunks_store()
 
 class OpenSearchService:
     def __init__(self, host: str = settings.opensearch_collection_endpoint, region: str = settings.aws_region):
@@ -106,6 +114,7 @@ class OpenSearchService:
             
         for chunk in chunks:
             _LOCAL_CHUNKS_STORE[chunk.chunk_id] = chunk.model_dump()
+        save_json(CHUNKS_FILE, _LOCAL_CHUNKS_STORE)
 
         if not self.client:
             logger.info(f"Stored {len(chunks)} chunks in local memory store fallback")
