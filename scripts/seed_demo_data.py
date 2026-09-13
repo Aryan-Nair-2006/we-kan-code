@@ -3,11 +3,13 @@ Seed Demo Data Script — Team Knowledge Finder
 
 Uploads synthetic demo documents from data/demo/ into the running backend API or AWS S3
 with tailored metadata for RBAC access levels, document categories, and versioning.
+Supports `--dry-run` for offline validation.
 """
 import os
 import sys
 import glob
 import logging
+import argparse
 import requests
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -105,9 +107,8 @@ DOC_METADATA = {
 }
 
 
-def seed_documents(api_url: str = API_BASE_URL):
+def seed_documents(api_url: str = API_BASE_URL, dry_run: bool = False):
     """Iterates over demo documents and uploads them via the backend API with specific metadata."""
-    # Ensure sequential upload order (v1 before v2 so superseding occurs naturally)
     ordered_files = [
         "01_project_architecture_overview.md",
         "02_api_specification_v1_legacy.md",
@@ -128,8 +129,9 @@ def seed_documents(api_url: str = API_BASE_URL):
     if auth_token:
         headers["Authorization"] = f"Bearer {auth_token}"
         
-    logger.info(f"Starting seed of {len(ordered_files)} demo documents to {api_url}")
+    logger.info(f"{'[DRY RUN] ' if dry_run else ''}Starting seed of {len(ordered_files)} demo documents to {api_url}")
     
+    success_count = 0
     for filename in ordered_files:
         filepath = os.path.join(DEMO_DIR, filename)
         if not os.path.exists(filepath):
@@ -156,6 +158,11 @@ def seed_documents(api_url: str = API_BASE_URL):
             "version": meta["version"]
         }
         
+        if dry_run:
+            logger.info(f"[DRY RUN] Would upload '{filename}' as '{upload_name}' ({len(file_bytes)} bytes, v{meta['version']}, {meta['access_level']}) to {api_url}/documents/upload")
+            success_count += 1
+            continue
+            
         try:
             res = requests.post(
                 f"{api_url}/documents/upload",
@@ -167,11 +174,19 @@ def seed_documents(api_url: str = API_BASE_URL):
             if res.status_code in (200, 201):
                 doc_res = res.json()
                 logger.info(f"✅ Uploaded '{filename}' as '{upload_name}' (v{meta['version']}, {meta['access_level']}) -> ID: {doc_res.get('document_id', 'OK')}")
+                success_count += 1
             else:
                 logger.warning(f"⚠️ Failed to upload {filename}: {res.status_code} - {res.text}")
         except Exception as e:
             logger.error(f"❌ Error uploading {filename}: {e}")
 
+    logger.info(f"Summary: {success_count}/{len(ordered_files)} documents processed successfully.")
+
 
 if __name__ == "__main__":
-    seed_documents()
+    parser = argparse.ArgumentParser(description="Seed synthetic demo documents into Team Knowledge Finder")
+    parser.add_argument("--api-url", default=API_BASE_URL, help="Backend API base URL")
+    parser.add_argument("--dry-run", action="store_true", help="Validate document discovery and metadata without uploading")
+    args = parser.parse_args()
+    
+    seed_documents(api_url=args.api_url, dry_run=args.dry_run)

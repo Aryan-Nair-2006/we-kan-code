@@ -233,7 +233,7 @@ Resources:
             - Effect: Allow
               Action:
                 - aoss:APIAccessAll
-              Resource: !GetAtt KnowledgeCollection.Arn
+              Resource: "*"
             - Effect: Allow
               Action:
                 - cloudwatch:PutMetricData
