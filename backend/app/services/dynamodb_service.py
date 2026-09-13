@@ -13,12 +13,14 @@ _LOCAL_DOCS_STORE: Dict[str, DocumentMetadata] = {}
 class DynamoDBService:
     def __init__(self, table_name: str = settings.dynamodb_table_name):
         self.table_name = table_name or "test-table"
-        try:
-            self.dynamodb = boto3.resource('dynamodb', region_name=settings.aws_region or "us-east-1")
-            self.table = self.dynamodb.Table(self.table_name)
-        except Exception as e:
-            logger.warning(f"DynamoDB resource initialization warning: {e}")
-            self.table = None
+        self.table = None
+        if boto3.Session().get_credentials() is not None:
+            try:
+                self.dynamodb = boto3.resource('dynamodb', region_name=settings.aws_region or "us-east-1")
+                self.table = self.dynamodb.Table(self.table_name)
+            except Exception as e:
+                logger.warning(f"DynamoDB resource initialization warning: {e}")
+                self.table = None
         
     def create_document(self, metadata: DocumentMetadata) -> DocumentMetadata:
         _LOCAL_DOCS_STORE[metadata.document_id] = metadata

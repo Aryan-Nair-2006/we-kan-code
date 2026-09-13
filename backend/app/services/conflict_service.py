@@ -29,6 +29,9 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_LOCAL_CONFLICTS_STORE: Dict[str, ConflictRecord] = {}
+
+
 class ConflictService:
     """
     Detects and stores conflict records between document chunks.
@@ -50,14 +53,23 @@ class ConflictService:
     @property
     def bedrock(self):
         if self._bedrock is None:
-            self._bedrock = boto3.client("bedrock-runtime", region_name=settings.aws_region)
+            if boto3.Session().get_credentials() is not None:
+                try:
+                    self._bedrock = boto3.client("bedrock-runtime", region_name=settings.aws_region)
+                except Exception:
+                    self._bedrock = None
         return self._bedrock
 
     @property
     def dynamodb_table(self):
         if self._dynamodb is None:
-            ddb = boto3.resource("dynamodb", region_name=settings.aws_region)
-            self._dynamodb = ddb.Table(self.table_name)
+            if boto3.Session().get_credentials() is not None:
+                try:
+                    ddb = boto3.resource("dynamodb", region_name=settings.aws_region)
+                    self._dynamodb = ddb.Table(self.table_name)
+                except Exception as e:
+                    logger.warning(f"Conflict table init warning: {e}")
+                    self._dynamodb = None
         return self._dynamodb
 
     # ------------------------------------------------------------------
@@ -106,26 +118,28 @@ class ConflictService:
         """
         List all conflict records, optionally filtered by document_id.
         """
-        try:
-            response = self.dynamodb_table.scan()
-            items = response.get("Items", [])
-            records = []
-            for item in items:
-                try:
-                    records.append(ConflictRecord(**item))
-                except Exception as e:
-                    logger.warning(f"[Conflicts] Could not parse conflict record {item}: {e}")
-            if document_id:
-                records = [
-                    r for r in records
-                    if r.source_document_id == document_id
-                    or r.conflicting_document_id == document_id
-                ]
-            records.sort(key=lambda r: r.detected_at, reverse=True)
-            return records
-        except Exception as e:
-            logger.error(f"[Conflicts] Failed to list conflicts: {e}")
-            return []
+        if self.dynamodb_table:
+            try:
+                response = self.dynamodb_table.scan()
+                items = response.get("Items", [])
+                for item in items:
+                    try:
+                        rec = ConflictRecord(**item)
+                        _LOCAL_CONFLICTS_STORE[rec.conflict_id] = rec
+                    except Exception as e:
+                        logger.warning(f"[Conflicts] Could not parse conflict record {item}: {e}")
+            except Exception as e:
+                logger.warning(f"[Conflicts] Live table scan error: {e}")
+
+        records = list(_LOCAL_CONFLICTS_STORE.values())
+        if document_id:
+            records = [
+                r for r in records
+                if r.source_document_id == document_id
+                or r.conflicting_document_id == document_id
+            ]
+        records.sort(key=lambda r: r.detected_at, reverse=True)
+        return records
 
     def get_conflicts_for_document_ids(self, document_ids: List[str]) -> List[ConflictRecord]:
         """
@@ -334,12 +348,14 @@ class ConflictService:
             detected_at=_now_iso(),
             status="OPEN",
         )
-        try:
-            self.dynamodb_table.put_item(Item=record.model_dump(mode="json"))
-            logger.info(
-                f"[Conflicts] Stored conflict {record.conflict_id}: "
-                f"{source_document_id}/{source_chunk_id} vs {conflicting_document_id}/{conflicting_chunk_id} "
-                f"confidence={confidence:.2f}"
-            )
-        except Exception as e:
-            logger.error(f"[Conflicts] Failed to store conflict record: {e}")
+        _LOCAL_CONFLICTS_STORE[record.conflict_id] = record
+        if self.dynamodb_table:
+            try:
+                self.dynamodb_table.put_item(Item=record.model_dump(mode="json"))
+                logger.info(
+                    f"[Conflicts] Stored conflict {record.conflict_id}: "
+                    f"{source_document_id}/{source_chunk_id} vs {conflicting_document_id}/{conflicting_chunk_id} "
+                    f"confidence={confidence:.2f}"
+                )
+            except Exception as e:
+                logger.warning(f"[Conflicts] Failed to store live conflict: {e}")
