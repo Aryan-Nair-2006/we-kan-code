@@ -1,0 +1,20 @@
+version = 0.1
+
+[default]
+[default.global.parameters]
+stack_name = "team-knowledge-finder"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.validate.parameters]
+lint = false
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = false
+region = "ap-south-1"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-crci1qohtcl5"
+stack_name = "team-knowledge-finder"
+disable_rollback = false

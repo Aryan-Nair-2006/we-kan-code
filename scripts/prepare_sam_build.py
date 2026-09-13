@@ -15,10 +15,17 @@ def prepare_build():
     
     print(f"Preparing SAM build context at: {build_dir}")
     
-    # Clean previous build context cleanly if it exists
+    # Clean previous build context and stale .aws-sam cleanly if they exist
     if os.path.exists(build_dir):
         shutil.rmtree(build_dir, onerror=remove_readonly)
     os.makedirs(build_dir, exist_ok=True)
+    
+    aws_sam_dir = os.path.join(root_dir, '.aws-sam')
+    if os.path.exists(aws_sam_dir):
+        try:
+            shutil.rmtree(aws_sam_dir, onerror=remove_readonly)
+        except Exception:
+            pass
     
     # Ignore bytecode, tests, and caches when copying into build context
     ignore_pattern = shutil.ignore_patterns(

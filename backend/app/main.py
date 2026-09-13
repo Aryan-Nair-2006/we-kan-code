@@ -130,7 +130,7 @@ def resolve_review(flag_id: str, request: ResolveFlagRequest, http_request: Requ
     if auth_ctx.role not in ("developer", "admin", "team"):
         raise HTTPException(status_code=403, detail="Insufficient permissions to resolve reviews")
 
-    if auth_ctx and auth_ctx.user_id and (not request.reviewer or request.reviewer == "anonymous"):
+    if auth_ctx and auth_ctx.user_id:
         request.reviewer = auth_ctx.user_id
 
     try:

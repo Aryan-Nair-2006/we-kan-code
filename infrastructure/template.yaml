@@ -12,7 +12,7 @@ Globals:
         LOG_LEVEL: INFO
         LOG_FORMAT: json
         ENVIRONMENT: production
-        S3_BUCKET_NAME: !Ref KnowledgeBucket
+        S3_BUCKET_NAME: !Sub "${AWS::StackName}-knowledge-bucket"
         DYNAMODB_TABLE_NAME: !Ref MetadataTable
         REVIEWS_TABLE_NAME: !Ref ReviewsTable
         CONFLICTS_TABLE_NAME: !Ref ConflictsTable
@@ -35,8 +35,45 @@ Resources:
   # -------------------------------------------------------------------------
   KnowledgeBucket:
     Type: AWS::S3::Bucket
+    DependsOn:
+      - IngestionLambdaDocumentUploadPermission
+      - IndexingLambdaProcessedChunksCreatedPermission
     Properties:
       BucketName: !Sub "${AWS::StackName}-knowledge-bucket"
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt IngestionLambda.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: documents/raw/
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt IndexingLambda.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: processed/text/
+                  - Name: suffix
+                    Value: chunks.json
+
+  IngestionLambdaDocumentUploadPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref IngestionLambda
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::${AWS::StackName}-knowledge-bucket"
+
+  IndexingLambdaProcessedChunksCreatedPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref IndexingLambda
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::${AWS::StackName}-knowledge-bucket"
 
   # -------------------------------------------------------------------------
   # DynamoDB Table (Metadata Storage)
@@ -117,7 +154,7 @@ Resources:
       Name: !Sub "${AWS::StackName}-access"
       Type: data
       Policy: !Sub >
-        [{"Description":"Access for Lambda","Rules":[{"ResourceType":"index","Resource":["index/*/*"],"Permission":["aoss:*"]}, {"ResourceType":"collection","Resource":["collection/${AWS::StackName}-kb"],"Permission":["aoss:*"]}],"Principal":["${IndexingLambdaRole.Arn}", "${QueryLambdaRole.Arn}"]}]
+        [{"Description":"Access for Lambda","Rules":[{"ResourceType":"index","Resource":["index/*/*"],"Permission":["aoss:*"]}, {"ResourceType":"collection","Resource":["collection/${AWS::StackName}-kb"],"Permission":["aoss:*"]}],"Principal":["arn:aws:iam::${AWS::AccountId}:root"]}]
 
   # -------------------------------------------------------------------------
   # Lambdas
@@ -131,23 +168,10 @@ Resources:
       CodeUri: ../.sam_build_context
       Handler: lambdas.ingestion.handler.lambda_handler
       Policies:
-        - S3ReadPolicy:
-            BucketName: !Ref KnowledgeBucket
         - S3CrudPolicy:
-            BucketName: !Ref KnowledgeBucket
+            BucketName: !Sub "${AWS::StackName}-knowledge-bucket"
         - DynamoDBCrudPolicy:
             TableName: !Ref MetadataTable
-      Events:
-        DocumentUpload:
-          Type: S3
-          Properties:
-            Bucket: !Ref KnowledgeBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: prefix
-                    Value: documents/raw/
 
   IndexingLambda:
     Type: AWS::Serverless::Function
@@ -159,8 +183,8 @@ Resources:
       Handler: lambdas.indexing.handler.lambda_handler
       Timeout: 900 # 15 minutes for batch indexing
       Policies:
-        - S3ReadPolicy:
-            BucketName: !Ref KnowledgeBucket
+        - S3CrudPolicy:
+            BucketName: !Sub "${AWS::StackName}-knowledge-bucket"
         - DynamoDBCrudPolicy:
             TableName: !Ref MetadataTable
         - DynamoDBCrudPolicy:
@@ -178,19 +202,6 @@ Resources:
               Action:
                 - cloudwatch:PutMetricData
               Resource: "*"
-      Events:
-        ProcessedChunksCreated:
-          Type: S3
-          Properties:
-            Bucket: !Ref KnowledgeBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: prefix
-                    Value: processed/text/
-                  - Name: suffix
-                    Value: chunks.json
 
   QueryLambda:
     Type: AWS::Serverless::Function
@@ -250,7 +261,7 @@ Resources:
           REVIEWS_TABLE_NAME: !Ref ReviewsTable
       Policies:
         - S3CrudPolicy:
-            BucketName: !Ref KnowledgeBucket
+            BucketName: !Sub "${AWS::StackName}-knowledge-bucket"
         - DynamoDBCrudPolicy:
             TableName: !Ref MetadataTable
         - DynamoDBCrudPolicy:
