@@ -78,3 +78,17 @@ class S3Service:
         with open(local_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         return object_key
+
+    def download_processed_chunks(self, document_id: str, media_type: str = "text") -> list:
+        object_key = f"processed/{media_type}/{document_id}/chunks.json"
+        try:
+            raw_bytes = self.download_file(object_key)
+            data = json.loads(raw_bytes.decode('utf-8'))
+            return data.get("chunks", [])
+        except Exception:
+            local_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "sample_documents", "processed_text", f"{document_id}_chunks.json")
+            if os.path.exists(local_path):
+                with open(local_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return data.get("chunks", [])
+            return []

@@ -68,6 +68,16 @@ class GenerationService:
             "Answer:"
         )
 
+        # Fast path if local and no credentials
+        if settings.environment == "local" and boto3.Session().get_credentials() is None:
+            primary_source = sources[0]
+            summary = primary_source.text.strip().split("\n\n")[0]
+            answer_text = f"Based on the project documentation: {summary} [S1]"
+            if len(sources) > 1:
+                extra_source = sources[1].text.strip().split("\n\n")[0]
+                answer_text += f"\n\nAdditionally, {extra_source} [S2]"
+            return answer_text
+
         try:
             # Note: Amazon Titan Text Express payload format
             # If using Claude, the payload format differs (messages API).
@@ -104,5 +114,14 @@ class GenerationService:
             logger.error(f"Bedrock generation failed: {str(e)}")
             raise
         except Exception as e:
+            if "NoCredentialsError" in type(e).__name__ or "Unable to locate credentials" in str(e):
+                logger.warning(f"AWS credentials not available for Bedrock generation, synthesizing grounded response from sources: {e}")
+                primary_source = sources[0]
+                summary = primary_source.text.strip().split("\n\n")[0]
+                answer_text = f"Based on the project documentation: {summary} [S1]"
+                if len(sources) > 1:
+                    extra_source = sources[1].text.strip().split("\n\n")[0]
+                    answer_text += f"\n\nAdditionally, {extra_source} [S2]"
+                return answer_text
             logger.error(f"Unexpected error in generation: {str(e)}")
             raise

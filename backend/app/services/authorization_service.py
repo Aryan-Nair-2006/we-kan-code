@@ -49,12 +49,12 @@ class AuthorizationService:
         - In production: parse the JWT from the Authorization header.
           API Gateway should have already validated the JWT signature;
           we just decode the claims without re-verifying (trust the gateway).
-        - In local dev (ENVIRONMENT=local): use DEV_USER_ID / DEV_ROLE env vars.
+        - In local dev (ENVIRONMENT=local): use request tokens/headers or DEV_USER_ID / DEV_ROLE env vars.
 
         Raises ValueError on any authentication failure (caller should return 401/403).
         """
         if self.environment == "local":
-            return self._build_local_auth_context()
+            return self._build_local_auth_context(request)
         else:
             return self._build_production_auth_context(request)
 
@@ -152,17 +152,49 @@ class AuthorizationService:
     # Internal builders
     # ------------------------------------------------------------------
 
-    def _build_local_auth_context(self) -> AuthContext:
+    def _build_local_auth_context(self, request: Optional[Request] = None) -> AuthContext:
         """
         Local development auth — ONLY active when ENVIRONMENT=local.
-        Uses DEV_USER_ID and DEV_ROLE env vars with safe defaults.
+        Inspects request headers (Authorization / X-Role / X-User-Id) or DEV_USER_ID / DEV_ROLE env vars.
         """
         user_id = os.getenv("DEV_USER_ID", "demo-user")
-        role = os.getenv("DEV_ROLE", "developer").lower()
+        role = os.getenv("DEV_ROLE", "admin").lower()
+
+        if request is not None:
+            x_role = request.headers.get("X-Role", "").lower()
+            if x_role in _VALID_ROLES:
+                role = x_role
+            x_user = request.headers.get("X-User-Id", "")
+            if x_user:
+                user_id = x_user
+
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                token = auth_header[len("Bearer "):]
+                if token.startswith("mock-token-for-"):
+                    parts = token.split("-")
+                    if len(parts) >= 5:
+                        role_cand = parts[-1].lower()
+                        if role_cand in _VALID_ROLES:
+                            role = role_cand
+                        user_id = "-".join(parts[3:-1]) or user_id
+                else:
+                    try:
+                        claims = self._decode_jwt_claims(token)
+                        user_id = claims.get("sub") or claims.get("username") or user_id
+                        role_cand = (
+                            self._role_from_groups(claims.get("cognito:groups", []))
+                            or claims.get("custom:role")
+                            or ""
+                        ).lower()
+                        if role_cand in _VALID_ROLES:
+                            role = role_cand
+                    except Exception:
+                        pass
 
         if role not in _VALID_ROLES:
             logger.warning(
-                f"DEV_ROLE='{role}' is not a valid role. Defaulting to 'public' (fail-closed)."
+                f"Role '{role}' is not a valid role. Defaulting to 'public' (fail-closed)."
             )
             role = "public"
 

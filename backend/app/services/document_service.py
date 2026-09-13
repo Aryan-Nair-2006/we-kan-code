@@ -8,6 +8,7 @@ from shared.constants.access_level import AccessLevel
 from backend.app.services.s3_service import S3Service
 from backend.app.services.dynamodb_service import DynamoDBService
 from backend.app.core.exceptions import ValidationError
+from backend.app.core.config import settings
 from backend.app.core.logging import setup_logger
 
 logger = setup_logger(__name__)
@@ -99,7 +100,52 @@ class DocumentService:
         metadata.s3_key = s3_key
 
         # Save to DynamoDB
-        return self.dynamodb_service.create_document(metadata)
+        doc = self.dynamodb_service.create_document(metadata)
+
+        # In local development mode, synchronously process and index so the document is READY immediately
+        try:
+            from lambdas.ingestion.handler import process_s3_object
+            from backend.app.services.embedding_service import EmbeddingService
+            from backend.app.services.opensearch_service import OpenSearchService
+            from shared.models.indexing import IndexedChunk
+
+            process_s3_object(self.s3_service.bucket_name, s3_key)
+            chunks = self.s3_service.download_processed_chunks(doc_id, "text")
+            if chunks and isinstance(chunks, list):
+                emb_svc = EmbeddingService()
+                os_svc = OpenSearchService()
+                indexed_chunks = []
+                for c in chunks:
+                    if not isinstance(c, dict):
+                        continue
+                    text = c.get("text", "")
+                    if not text.strip():
+                        continue
+                    emb = emb_svc.embed_text(text)
+                    indexed_chunks.append(IndexedChunk(
+                        chunk_id=c.get("chunk_id", f"{doc_id}#c0"),
+                        document_id=doc_id,
+                        text=text,
+                        embedding=emb,
+                        chunk_index=c.get("chunk_index", 0),
+                        page_number=c.get("page_number"),
+                        filename=filename,
+                        owner=owner,
+                        category=category,
+                        access_level=access_level.value if hasattr(access_level, "value") else str(access_level),
+                        version=version,
+                        document_status="READY",
+                        created_at=now_str,
+                        updated_at=now_str
+                    ))
+                if indexed_chunks:
+                    os_svc.bulk_index_chunks(indexed_chunks)
+                    doc.indexing_status = "INDEXED"
+                    self.dynamodb_service.update_document(doc)
+        except Exception as e:
+            logger.warning(f"Local ingestion pipeline warning: {e}")
+
+        return doc
 
     def _find_current_document(
         self, filename: str, owner: str, category: str

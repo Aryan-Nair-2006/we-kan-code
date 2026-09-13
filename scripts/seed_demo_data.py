@@ -169,7 +169,7 @@ def seed_documents(api_url: str = API_BASE_URL, dry_run: bool = False):
                 files={"file": (upload_name, file_bytes, "text/markdown")},
                 data=payload_data,
                 headers=headers,
-                timeout=30
+                timeout=120
             )
             if res.status_code in (200, 201):
                 doc_res = res.json()
