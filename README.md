@@ -106,38 +106,62 @@ flowchart TD
 
 ---
 
-## 🚀 Running Locally
+## 🚀 Quick Start (Local Development)
 
-### Prerequisites
+### 1. Prerequisites
 - Python 3.11+
-- AWS CLI configured (for Bedrock/DynamoDB integration if testing against AWS)
+- AWS CLI configured (for Bedrock/S3/DynamoDB access if running with live AWS services)
 
-### 1. Clone & Setup Environment
+### 2. Installation
 ```bash
+# Clone the repository
 git clone https://github.com/Aryan-Nair-2006/we-kan-code.git
 cd we-kan-code
 
 # Create and activate virtual environment
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+.\.venv\Scripts\Activate.ps1  # Windows PowerShell
+# source .venv/bin/activate    # macOS/Linux
 
-# Install dependencies
+# Install all dependencies (Streamlit, FastAPI, Bedrock, OpenSearch, etc.)
 pip install -r requirements.txt
 ```
 
-### 2. Start the FastAPI Backend
-```bash
-uvicorn backend.app.main:app --reload --port 8000
-```
-
-### 3. Start the Streamlit Frontend
+### 3. Run the Streamlit Application
 ```bash
 streamlit run frontend/app.py
 ```
 
 ---
 
-## ☁️ AWS Deployment (SAM)
+## 📂 Synthetic Demo Dataset & Evaluation Scenarios
+
+The repository includes a curated, realistic fictional dataset in `data/demo/` (and mirrored in `sample_documents/`) covering the **Atlas Knowledge Platform**:
+
+| Document | Access Level | Description & Test Scenario |
+| :--- | :---: | :--- |
+| `01_project_architecture_overview.md` | `team` | System architecture, vector dimension (1536), cosine similarity. |
+| `02_api_specification_v2.md` | `team` | Active API spec v2.0 with release deadline: **December 25, 2026**. |
+| `02_api_specification_v1_legacy.md` | `team` | **Superseded/Outdated** v1.0 spec with old deadline Dec 20, 2026 (tests freshness filtering). |
+| `03_database_data_model.md` | `developer` | DynamoDB schemas for Metadata, Reviews, and Conflicts. |
+| `04_deployment_runbook.md` | `developer` | Standard release schedule: **Tuesday at 03:00 UTC**. |
+| `11_emergency_deployment_override.md` | `developer` | **Contradictory Fact**: Friday 18:00 UTC override (tests conflict detection). |
+| `05_security_access_policy.md` | `admin` | RBAC hierarchy (`admin` > `developer` > `team` > `public`) and prompt injection defenses. |
+| `06_product_requirements_doc.md` | `team` | Confidence thresholds and citation passage linking. |
+| `07_incident_report_inc_402.md` | `team` | INC-402 OpenSearch latency post-mortem. |
+| `08_engineering_decision_record_edr09.md` | `developer` | EDR-09 decision adopting Titan Text Express and OpenSearch. |
+| `09_team_onboarding_guide.md` | `public` | Developer setup and test execution guide. |
+| `10_project_faq.md` | `public` | Supported formats (PDF, DOCX, MD, TXT, CSV, XLSX, PPTX) and 25MB limit. |
+
+### Demo Questions (`data/demo/questions.md`)
+- **Direct Retrieval**: *"What vector dimension and similarity metric are used for OpenSearch?"*
+- **Freshness Test**: *"What is the release deadline for the API Specification v2.0?"* (Answers Dec 25, 2026, rejecting superseded v1).
+- **Abstention Test**: *"Who is the CEO of OpenAI?"* (Gracefully abstains with zero hallucinations).
+- **Conflict Test**: Inspect conflicts between `04_deployment_runbook.md` and `11_emergency_deployment_override.md`.
+
+---
+
+## ☁️ AWS Serverless Deployment (SAM)
 
 ### 1. Prepare Build Context
 ```bash
