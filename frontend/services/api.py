@@ -9,9 +9,65 @@ API_BASE_URL = os.environ.get("API_BASE_URL", os.environ.get("API_URL", "http://
 API_URL = API_BASE_URL
 
 
+def get_auth_headers() -> Dict[str, str]:
+    """
+    Centralized helper that retrieves authentication token from Streamlit session state
+    or environment variables and formats the Authorization header for API Gateway / backend.
+    """
+    headers = {"Accept": "application/json"}
+    
+    # 1. Try Streamlit session state
+    try:
+        import streamlit as st
+        token = st.session_state.get("auth_token") or st.session_state.get("id_token")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+            return headers
+    except Exception:
+        pass
+        
+    # 2. Try environment variable fallback
+    env_token = os.environ.get("AUTH_TOKEN") or os.environ.get("JWT_TOKEN")
+    if env_token:
+        headers["Authorization"] = f"Bearer {env_token}"
+        
+    return headers
+
+
+def _handle_request_error(e: requests.exceptions.RequestException, default_msg: str) -> str:
+    """Format user-friendly error messages based on HTTP status code without leaking stack traces."""
+    if e.response is not None:
+        status = e.response.status_code
+        if status == 401:
+            return "Authentication required. Please log in with valid credentials."
+        elif status == 403:
+            return "Access denied. You do not have permission to view or perform this action."
+        elif status == 404:
+            return "Requested resource was not found."
+        elif status == 409:
+            return "A conflicting record or state already exists."
+        elif status == 422:
+            try:
+                detail = e.response.json().get("detail")
+                if isinstance(detail, list):
+                    return f"Validation error: {detail[0].get('msg', 'Invalid input')}"
+                return f"Validation error: {detail}"
+            except Exception:
+                return "Invalid input data format."
+        elif status >= 500:
+            return "Backend service temporarily unavailable. Please try again later."
+            
+        try:
+            return e.response.json().get("detail", default_msg)
+        except Exception:
+            return default_msg
+            
+    return default_msg
+
+
 def check_health() -> dict:
     try:
-        response = requests.get(f"{API_BASE_URL}/health", timeout=3)
+        response = requests.get(f"{API_BASE_URL}/health", headers=get_auth_headers(), timeout=3)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -27,33 +83,28 @@ def upload_document(filename: str, file_bytes: bytes, content_type: str, metadat
             "access_level": metadata.get("access_level", "team"),
             "version": metadata.get("version", "1.0")
         }
-        response = requests.post(f"{API_BASE_URL}/documents/upload", files=files, data=data, timeout=30)
+        headers = get_auth_headers()
+        response = requests.post(f"{API_BASE_URL}/documents/upload", files=files, data=data, headers=headers, timeout=30)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Error uploading document: {e}")
-        detail = "Server error"
-        if e.response is not None:
-            try:
-                detail = e.response.json().get("detail", e.response.text)
-            except Exception:
-                detail = e.response.text
-        return {"error": detail}
+        return {"error": _handle_request_error(e, "Error uploading document")}
 
 
 def get_document_status(document_id: str) -> dict:
     try:
-        response = requests.get(f"{API_BASE_URL}/documents/{document_id}", timeout=5)
+        response = requests.get(f"{API_BASE_URL}/documents/{document_id}", headers=get_auth_headers(), timeout=5)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching document status: {e}")
-        return {"error": str(e)}
+        return {"error": _handle_request_error(e, f"Unable to fetch document {document_id}")}
 
 
 def list_documents() -> list:
     try:
-        response = requests.get(f"{API_BASE_URL}/documents", timeout=5)
+        response = requests.get(f"{API_BASE_URL}/documents", headers=get_auth_headers(), timeout=5)
         response.raise_for_status()
         data = response.json()
         if isinstance(data, list):
@@ -74,19 +125,14 @@ def query_knowledge(query_text: str, access_levels: list = None) -> dict:
         response = requests.post(
             f"{API_BASE_URL}/query",
             json=payload,
+            headers=get_auth_headers(),
             timeout=30
         )
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Error querying knowledge: {e}")
-        detail = "Backend server unreachable. Please check if FastAPI is running."
-        if e.response is not None:
-            try:
-                detail = e.response.json().get("detail", e.response.text)
-            except Exception:
-                detail = e.response.text
-        return {"error": detail}
+        return {"error": _handle_request_error(e, "Backend server unreachable. Please check your connection.")}
 
 
 def flag_content(
@@ -113,18 +159,12 @@ def flag_content(
             "supporting_passage": supporting_passage
         }
         payload = {k: v for k, v in payload.items() if v is not None}
-        response = requests.post(f"{API_BASE_URL}/flags", json=payload, timeout=10)
+        response = requests.post(f"{API_BASE_URL}/flags", json=payload, headers=get_auth_headers(), timeout=10)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Error flagging content: {e}")
-        detail = "Failed to submit flag"
-        if e.response is not None:
-            try:
-                detail = e.response.json().get("detail", e.response.text)
-            except Exception:
-                detail = e.response.text
-        return {"error": detail}
+        return {"error": _handle_request_error(e, "Failed to submit flag")}
 
 
 def submit_flag(flag_data: dict) -> dict:
@@ -147,7 +187,7 @@ def list_reviews(status: Optional[str] = None) -> list:
         params = {}
         if status and status.lower() not in ("all", ""):
             params["status"] = status
-        response = requests.get(f"{API_BASE_URL}/reviews", params=params, timeout=5)
+        response = requests.get(f"{API_BASE_URL}/reviews", params=params, headers=get_auth_headers(), timeout=5)
         response.raise_for_status()
         data = response.json()
         return data if isinstance(data, list) else []
@@ -161,12 +201,12 @@ def resolve_review(flag_id: str, resolution: str, reviewer: str = "anonymous", n
         payload = {"resolution": resolution, "reviewer": reviewer}
         if notes:
             payload["notes"] = notes
-        response = requests.post(f"{API_BASE_URL}/reviews/{flag_id}/resolve", json=payload, timeout=10)
+        response = requests.post(f"{API_BASE_URL}/reviews/{flag_id}/resolve", json=payload, headers=get_auth_headers(), timeout=10)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Error resolving review: {e}")
-        return {"error": str(e)}
+        return {"error": _handle_request_error(e, f"Unable to resolve review {flag_id}")}
 
 
 def update_review_status(flag_id: str, new_status: str, reviewer: str = "Admin", notes: str = "") -> dict:
@@ -176,34 +216,34 @@ def update_review_status(flag_id: str, new_status: str, reviewer: str = "Admin",
 
 def get_analytics() -> dict:
     try:
-        response = requests.get(f"{API_BASE_URL}/analytics/overview", timeout=5)
+        response = requests.get(f"{API_BASE_URL}/analytics/overview", headers=get_auth_headers(), timeout=5)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching analytics: {e}")
-        return {"error": str(e)}
+        return {"error": _handle_request_error(e, "Analytics service currently unavailable")}
 
 
 # ---------------------------------------------------------------------------
-# Phase 7: Auth / Freshness / Conflicts
+# Phase 7 & 8: Auth / Freshness / Conflicts
 # ---------------------------------------------------------------------------
 
 def get_auth_me() -> dict:
     """Returns the current user's AuthContext from the backend."""
     try:
-        response = requests.get(f"{API_BASE_URL}/auth/me", timeout=5)
+        response = requests.get(f"{API_BASE_URL}/auth/me", headers=get_auth_headers(), timeout=5)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching auth context: {e}")
-        return {"error": str(e)}
+        return {"error": _handle_request_error(e, "Authentication context unavailable")}
 
 
 def get_conflicts(document_id: str = None) -> list:
     """Returns conflict records, optionally filtered by document_id."""
     try:
         params = {"document_id": document_id} if document_id else {}
-        response = requests.get(f"{API_BASE_URL}/conflicts", params=params, timeout=5)
+        response = requests.get(f"{API_BASE_URL}/conflicts", params=params, headers=get_auth_headers(), timeout=5)
         response.raise_for_status()
         data = response.json()
         return data if isinstance(data, list) else []
@@ -215,9 +255,10 @@ def get_conflicts(document_id: str = None) -> list:
 def get_document_freshness(document_id: str) -> dict:
     """Returns freshness metadata for a specific document."""
     try:
-        response = requests.get(f"{API_BASE_URL}/documents/{document_id}/freshness", timeout=5)
+        response = requests.get(f"{API_BASE_URL}/documents/{document_id}/freshness", headers=get_auth_headers(), timeout=5)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching freshness for {document_id}: {e}")
-        return {"error": str(e)}
+        return {"error": _handle_request_error(e, f"Freshness data unavailable for {document_id}")}
+
